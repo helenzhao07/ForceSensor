@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include "NIDAQmx.h"
 #include "MatrixMultiplication.h"
+#include <iostream>
+#include <fstream>
+#include <array>
 
 //FT43238 ATI
 
@@ -9,49 +12,142 @@
 int32 CVICALLBACK EveryNCallback(TaskHandle taskHandle, int32 everyNsamplesEventType, uInt32 nSamples, void* callbackData);
 int32 CVICALLBACK DoneCallback(TaskHandle taskHandle, int32 status, void* callbackData);
 
-//being able to change rate (look at Hz) --> input
-//access data --> output
-//
+bool ButtonState;
+bool GetState;
+double bias[6];
+int	optionInput;
+int setNumber;
+int SampleNb = 0;
+
+double SaveMatrix[1500][6][1];//every 300 samples is one set assume 5 sets
+
+double CalibrationMatrix[6][6] = {
+	{0.04941, -0.09207, -0.02743, -3.43541,   0.07532,   3.40960}, //Fx
+	{-0.01404,   3.99394, -0.01794, -2.06329, -0.05223, -1.88546}, //Fy
+	{3.77291,   0.11830,   3.89295, -0.04394,   3.71715,   0.00160}, //Fz
+	{-0.01371,  46.66380,  20.90754, -24.34604, -21.82519, -22.04622}, //Tx
+	{-24.99932,   0.20581,  12.83938,  39.98184,  10.73087, -39.75729}, //Ty
+	{-0.07259,  15.34146,   0.04813,  15.30542,   0.48561,  14.99242} }; //Tz
+
+void GetBias(bool ButtonState, double R1, double R2, double R3, double R4, double R5, double R6) {
+	if (ButtonState == true) {
+		bias[0] = R1;
+		bias[1] = R2;
+		bias[2] = R3;
+		bias[3] = R4;
+		bias[4] = R5;
+		bias[5] = R6;
+
+		cout << "Bias done" << endl;
+	}
+}
+
+void MatrixMultiplication(bool runState, int samplenb, double G0, double G1, double G2, double G3, double G4, double G5) {
+	double ResultMatrix[1][6];
+	double InitialMatrix[6][1] = { {G0 - bias[0]}, {G1 - bias[1]}, {G2 - bias[2]}, {G3 - bias[3]}, {G4 - bias[4]}, {G5 - bias[5]} };
+	//int	sampleNumber = 0;
+	if (runState == true) {
+		for (int i = 0; i < 6; i++) {
+			for (int j = 0; j < 1; j++) {
+				ResultMatrix[i][j] = 0;
+				for (int k = 0; k < 6; k++) {
+					ResultMatrix[i][j] += CalibrationMatrix[i][k] * InitialMatrix[k][j];
+				}
+				//cout << endl;
+				//cout << "gp nb:" << sampleNumber << endl;
+				//save into a big matrix
+				//cout << ResultMatrix[i][j] << "\t";
+				SaveMatrix[samplenb][i][j] = ResultMatrix[i][j];
+				//sampleNumber += 1;
+				//cout << SaveMatrix[sampleNumber][i][j] << endl;
+			}
+			//cout << endl;
+		}
+		//cout << "set nb:" << setNumber << endl;			--> to check
+	}
+}
+
+void Menu() {
+	cout << "Choose an option:" << endl;
+	cout << "1 - Bias" << endl;
+	cout << "2 - Get data" << endl;
+	cout << "3 - Exit" << endl;
+	cout << "4 - Print out all sets" << endl;
+	cin >> optionInput;
+	getchar();
+}
 
 int main(void)
 {
 	int32       error = 0;
 	TaskHandle  taskHandle = 0;
 	char        errBuff[2048] = { '\0' };
-	char		BiasStatus = false;
-	char		BiasINStatus;
-	bool		RunningStatus = true;
 
-	/*********************************************/
-	// DAQmx Configure Code
-	/*********************************************/
-	DAQmxErrChk(DAQmxCreateTask("", &taskHandle));
-	DAQmxErrChk(DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai0:5", "", DAQmx_Val_Cfg_Default, -10.0, 10.0, DAQmx_Val_Volts, NULL));
+	//create the csv file
+	//ofstream MatrixFile("ForceData.txt");
+	std::ofstream myFile("ForceData.csv");
 
+	Menu();
 
+	while (optionInput != 3) {
+		// DAQmx Configure Code
+		DAQmxErrChk(DAQmxCreateTask("", &taskHandle));
 
-	// ai0:5 used to read channels from channel 0 to 5 (6 channels total) needed for reading ATI Nano 17 ;
-	DAQmxErrChk(DAQmxCfgSampClkTiming(taskHandle, "", 10000.0, DAQmx_Val_Rising, DAQmx_Val_ContSamps, 1000));
+		DAQmxErrChk(DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai0:5", "", DAQmx_Val_Cfg_Default, -10.0, 10.0, DAQmx_Val_Volts, NULL));
 
-	//looping for bias
-	while (RunningStatus) {
-		cout << "Do you want to bias? (Y/N)";
-		cin >> BiasINStatus;
-		if (BiasINStatus == "Y") {
-			BiasStatus = true;
+		if (optionInput == 1) {
+
+			ButtonState = true;
+			GetState = false;
+
+			DAQmxErrChk(DAQmxCfgSampClkTiming(taskHandle, "", 1000.0, DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, 100)); //DAQmx_Val_ContSamps
+			DAQmxErrChk(DAQmxCfgDigEdgeStartTrig(taskHandle, "/Dev1/PFI0", DAQmx_Val_Rising));
+
+			DAQmxErrChk(DAQmxRegisterEveryNSamplesEvent(taskHandle, DAQmx_Val_Acquired_Into_Buffer, 100, 0, EveryNCallback, NULL));
+			DAQmxErrChk(DAQmxRegisterDoneEvent(taskHandle, 0, DoneCallback, NULL));
+
+			DAQmxErrChk(DAQmxStartTask(taskHandle));
+
+			getchar();
+
+		} else if (optionInput == 2) {
+			ButtonState = false;
+			GetState = true;
+
+			DAQmxErrChk(DAQmxCfgSampClkTiming(taskHandle, "", 3000.0, DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, 30000)); //DAQmx_Val_ContSamps
+			DAQmxErrChk(DAQmxCfgDigEdgeStartTrig(taskHandle, "/Dev1/PFI0", DAQmx_Val_Rising));
+
+		    DAQmxErrChk(DAQmxRegisterEveryNSamplesEvent(taskHandle, DAQmx_Val_Acquired_Into_Buffer, 100, 0, EveryNCallback, NULL));
+		    DAQmxErrChk(DAQmxRegisterDoneEvent(taskHandle, 0, DoneCallback, NULL));
+
+			DAQmxErrChk(DAQmxStartTask(taskHandle));
+
+			setNumber += 1;
+			getchar();
+
+		} else if (optionInput == 4) {
+			ButtonState = false;
+			int	setNbOut = 1;
+
+			for (int i = 0; i != SampleNb; ++i) {
+				for (int x = 0; x != 6; ++x) {
+					for (int y = 0; y != 1; ++y) {
+						cout << SaveMatrix[i][x][y] << " ";
+					}
+					cout << endl;
+				}
+				cout << "Set number:"<< setNbOut << "\t" << "Sample number:" << i << endl;
+				cout << endl;
+				if ((i % 300 == 0) && (i !=0)) {
+					setNbOut += 1;
+				}
+			}
 		}
-		DAQmxErrChk(DAQmxRegisterEveryNSamplesEvent(taskHandle, DAQmx_Val_Acquired_Into_Buffer, 1000, 0, EveryNCallback, NULL));
-		DAQmxErrChk(DAQmxRegisterDoneEvent(taskHandle, 0, DoneCallback, NULL));
-
-		/*********************************************/
-		// DAQmx Start Code
-		/*********************************************/
-		DAQmxErrChk(DAQmxStartTask(taskHandle));
-
-		printf("Acquiring samples continuously. Press Enter to interrupt\n");
-		getchar();
+		
+		Menu();
+	
 	}
-
+	//MatrixFile.close();
 Error:
 	if (DAQmxFailed(error))
 		DAQmxGetExtendedErrorInfo(errBuff, 2048);
@@ -69,6 +165,7 @@ Error:
 	return 0;
 }
 
+
 int32 CVICALLBACK EveryNCallback(TaskHandle taskHandle, int32 everyNsamplesEventType, uInt32 nSamples, void* callbackData)
 {
 	int32       error = 0;
@@ -81,11 +178,14 @@ int32 CVICALLBACK EveryNCallback(TaskHandle taskHandle, int32 everyNsamplesEvent
 	// DAQmx Read Code
 	/*********************************************/
 	//int32 DAQmxReadAnalogF64 (TaskHandle taskHandle, int32 numSampsPerChan, float64 timeout, bool32 fillMode, float64 readArray[], uInt32 arraySizeInSamps, int32 *sampsPerChanRead, bool32 *reserved);
-	DAQmxErrChk(DAQmxReadAnalogF64(taskHandle, 1000, 10.0, DAQmx_Val_GroupByScanNumber, data, 6000, &read, NULL));
+	DAQmxErrChk(DAQmxReadAnalogF64(taskHandle, 10, 10.0, DAQmx_Val_GroupByChannel, data, 60, &read, NULL));
 	if (read > 0) {
-		printf("Total %d. Value1: %f. Value2: %f. Value3: %f. Value4: %f. Value5: %f. Value6 %f.\r", (int)(totalRead += read), data[500], data[1500], data[2500], data[3500], data[4500], data[5500]);
-		GetBias(true, data[500], data[1500], data[2500], data[3500], data[4500], data[5500]);
-		MatrixMultiplication(data[500], data[1500], data[2500], data[3500], data[4500], data[5500]);
+		//cout << endl;
+		printf("Total %d. Value1: %f. Value2: %f. Value3: %f. Value4: %f. Value5: %f. Value6 %f.\r", (int)(totalRead += read), data[5], data[15], data[25], data[35], data[45], data[55]);
+		cout << endl;
+		GetBias(ButtonState, data[5], data[15], data[25], data[35], data[45], data[55]);
+		MatrixMultiplication(GetState, SampleNb, data[5], data[15], data[25], data[35], data[45], data[55]);
+		SampleNb += 1;
 		fflush(stdout);
 	}
 
@@ -102,6 +202,7 @@ Error:
 	return 0;
 }
 
+
 int32 CVICALLBACK DoneCallback(TaskHandle taskHandle, int32 status, void* callbackData)
 {
 	int32   error = 0;
@@ -109,6 +210,8 @@ int32 CVICALLBACK DoneCallback(TaskHandle taskHandle, int32 status, void* callba
 
 	// Check to see if an error stopped the task.
 	DAQmxErrChk(status);
+	DAQmxStopTask(taskHandle);
+	DAQmxClearTask(taskHandle);
 
 Error:
 	if (DAQmxFailed(error)) {
